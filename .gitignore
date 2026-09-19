@@ -1,0 +1,32 @@
+# Gradle and Android build outputs
+.gradle/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio / IntelliJ project files
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Machine-specific Android configuration
+local.properties
+
+# Generated and packaged artifacts
+*.apk
+*.aab
+*.ap_
+*.log
+*.hprof
+
+# Signing material and private keys
+*.jks
+*.keystore
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini

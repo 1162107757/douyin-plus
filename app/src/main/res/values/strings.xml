@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">手势翻页</string>
+    <string name="accessibility_desc">在当前前台视频应用执行用户主动开启的上下翻页控制</string>
+    <string name="notification_channel_name">手势翻页</string>
+    <string name="notification_title">手势翻页运行中</string>
+    <string name="notification_text">前摄运行中 · 画面不保存</string>
+</resources>

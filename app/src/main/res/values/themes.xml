@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.GestureFeed" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/canvas</item>
+        <item name="android:navigationBarColor">@color/canvas</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">@color/primary</item>
+        <item name="android:colorControlHighlight">#1F2563EB</item>
+    </style>
+</resources>

@@ -1,0 +1,14 @@
+<resources>
+    <color name="canvas">#F8FAFC</color>
+    <color name="ink">#1E293B</color>
+    <color name="muted_ink">#475569</color>
+    <color name="border">#E2E8F0</color>
+    <color name="primary">#2563EB</color>
+    <color name="primary_pressed">#1D4ED8</color>
+    <color name="success">#16A34A</color>
+    <color name="success_soft">#DCFCE7</color>
+    <color name="warning">#EA580C</color>
+    <color name="danger">#DC2626</color>
+    <color name="surface_dark">#17212B</color>
+    <color name="surface_dark_2">#243242</color>
+</resources>
