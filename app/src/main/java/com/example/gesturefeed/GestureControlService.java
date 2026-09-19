@@ -51,6 +51,11 @@ public class GestureControlService extends Service {
     private boolean calibrationSawUp;
     private boolean calibrationSawDown;
     private GestureMode gestureMode = GestureMode.PALM_SWING;
+    private FeatureTemplateStore gestureTemplateStore;
+    private FeatureTemplateStore voiceTemplateStore;
+    private CustomGestureRecognizer customGestureRecognizer;
+    private VoiceCommandRecognizer customVoiceRecognizer;
+    private VoiceRecorder voiceRecorder;
 
     private HandlerThread cameraThread;
     private Handler cameraHandler;
@@ -75,9 +80,38 @@ public class GestureControlService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        gestureTemplateStore = new FeatureTemplateStore(this, "custom_gesture_templates");
+        voiceTemplateStore = new FeatureTemplateStore(this, "custom_voice_templates");
+        customGestureRecognizer = new CustomGestureRecognizer(gestureTemplateStore,
+                new CustomGestureRecognizer.Listener() {
+                    @Override
+                    public void onGesture(ControlDirection direction) {
+                        if (gestureMode == GestureMode.CUSTOM_GESTURE) handleRecognizedDirection(direction);
+                    }
+
+                    @Override
+                    public void onState(String state) {
+                        if (!paused && gestureMode == GestureMode.CUSTOM_GESTURE) sendState(state);
+                    }
+                });
+        customVoiceRecognizer = new VoiceCommandRecognizer(voiceTemplateStore,
+                new VoiceCommandRecognizer.Listener() {
+                    @Override
+                    public void onGesture(ControlDirection direction) {
+                        if (gestureMode == GestureMode.CUSTOM_VOICE) handleRecognizedDirection(direction);
+                    }
+
+                    @Override
+                    public void onState(String state) {
+                        if (!paused && gestureMode == GestureMode.CUSTOM_VOICE) sendState(state);
+                    }
+                });
         analyzer = new MediaPipeHandLandmarker(this, new MediaPipeHandLandmarker.Listener() {
             @Override
             public void onGesture(boolean upward) {
+                if (gestureMode == GestureMode.CUSTOM_GESTURE || gestureMode == GestureMode.CUSTOM_VOICE) {
+                    return;
+                }
                 if (calibrationMode) {
                     handleCalibrationGesture(upward);
                 } else {
@@ -88,6 +122,11 @@ public class GestureControlService extends Service {
             @Override
             public void onState(String state) {
                 if (!paused) sendState(state);
+            }
+        });
+        analyzer.setFrameListener((landmarks, timestamp, rotationDegrees) -> {
+            if (gestureMode == GestureMode.CUSTOM_GESTURE && !paused) {
+                customGestureRecognizer.onFrame(landmarks, timestamp, rotationDegrees);
             }
         });
         cameraThread = new HandlerThread("gesture-camera");
@@ -111,6 +150,7 @@ public class GestureControlService extends Service {
             calibrationSawUp = false;
             calibrationSawDown = false;
             closeCamera();
+            stopVoiceRecorder();
             if (Build.VERSION.SDK_INT >= 24) {
                 stopForeground(STOP_FOREGROUND_REMOVE);
             } else {
@@ -131,15 +171,24 @@ public class GestureControlService extends Service {
             calibrationMode = ACTION_CALIBRATE.equals(action);
             calibrationSawUp = false;
             calibrationSawDown = false;
+            customGestureRecognizer.reset();
+            customVoiceRecognizer.reset();
             createNotificationChannel();
             Notification notification = buildNotification();
             if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
+                int foregroundType = gestureMode == GestureMode.CUSTOM_VOICE
+                        ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                        : ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+                startForeground(NOTIFICATION_ID, notification, foregroundType);
             } else {
                 startForeground(NOTIFICATION_ID, notification);
             }
             sendState(calibrationMode ? "校准中 · 启动前摄" : runningState());
-            openFrontCamera();
+            if (gestureMode == GestureMode.CUSTOM_VOICE) {
+                openVoiceRecorder();
+            } else {
+                openFrontCamera();
+            }
         } else if (ACTION_CALIBRATE.equals(action)) {
             calibrationMode = true;
             calibrationSawUp = false;
@@ -155,10 +204,16 @@ public class GestureControlService extends Service {
     private void setGestureMode(GestureMode mode) {
         gestureMode = mode == null ? GestureMode.PALM_SWING : mode;
         if (analyzer != null) analyzer.setMode(gestureMode);
+        if (customGestureRecognizer != null) customGestureRecognizer.reset();
+        if (customVoiceRecognizer != null) customVoiceRecognizer.reset();
     }
 
     private String runningState() {
-        return gestureMode == GestureMode.TWO_FINGER_DIRECTION
+        return gestureMode == GestureMode.CUSTOM_GESTURE
+                ? "运行中 · 等待自定义手势"
+                : gestureMode == GestureMode.CUSTOM_VOICE
+                ? "运行中 · 等待自定义声音"
+                : gestureMode == GestureMode.TWO_FINGER_DIRECTION
                 ? "运行中 · 等待双指指向"
                 : gestureMode == GestureMode.MIDDLE_FINGER_DIRECTION
                 ? "运行中 · 等待中指指向"
@@ -168,23 +223,31 @@ public class GestureControlService extends Service {
     private void togglePause() {
         paused = !paused;
         analyzer.reset();
+        customGestureRecognizer.reset();
+        customVoiceRecognizer.reset();
         if (paused) {
             closeCamera();
+            stopVoiceRecorder();
             sendState("已暂停");
         } else {
             sendState(runningState());
-            openFrontCamera();
+            if (gestureMode == GestureMode.CUSTOM_VOICE) openVoiceRecorder();
+            else openFrontCamera();
         }
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.notify(NOTIFICATION_ID, buildNotification());
     }
 
     private void handleRecognizedGesture(boolean upward) {
+        handleRecognizedDirection(upward ? ControlDirection.UP : ControlDirection.DOWN);
+    }
+
+    private void handleRecognizedDirection(ControlDirection direction) {
         if (!running || paused) return;
         // AccessibilityService resolves whichever third-party app is currently
         // in the foreground; no video-app package is hard-coded here.
-        boolean dispatched = GestureAccessibilityService.performSwipe(upward);
-        Log.d(TAG, "recognized upward=" + upward + " dispatched=" + dispatched
+        boolean dispatched = GestureAccessibilityService.performSwipe(direction);
+        Log.d(TAG, "recognized direction=" + direction + " dispatched=" + dispatched
                 + " accessibilityConnected=" + GestureAccessibilityService.isConnected());
         if (dispatched) {
             Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
@@ -195,9 +258,13 @@ public class GestureControlService extends Service {
                     vibrator.vibrate(28);
                 }
             }
-            sendState(upward ? "已识别 · 下一个视频" : "已识别 · 上一个视频");
+            sendState("已识别 · " + direction.getAction());
         } else {
-            sendState(gestureMode == GestureMode.TWO_FINGER_DIRECTION
+            sendState(gestureMode == GestureMode.CUSTOM_GESTURE
+                    ? "请先打开视频应用，再做已学习手势"
+                    : gestureMode == GestureMode.CUSTOM_VOICE
+                    ? "请先打开视频应用，再说已学习口令"
+                    : gestureMode == GestureMode.TWO_FINGER_DIRECTION
                     ? "请先打开视频应用，再用双指指向"
                     : gestureMode == GestureMode.MIDDLE_FINGER_DIRECTION
                     ? "请先打开视频应用，再用中指指向"
@@ -222,6 +289,28 @@ public class GestureControlService extends Service {
         }
         if (calibrationSawUp && calibrationSawDown) {
             sendState("校准完成");
+        }
+    }
+
+    private void openVoiceRecorder() {
+        if (!running || paused) return;
+        if (Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            sendState("麦克风权限未开启");
+            return;
+        }
+        if (voiceRecorder == null) {
+            voiceRecorder = new VoiceRecorder(customVoiceRecognizer);
+        }
+        if (!voiceRecorder.start()) {
+            sendState("麦克风启动失败");
+        }
+    }
+
+    private void stopVoiceRecorder() {
+        if (voiceRecorder != null) {
+            voiceRecorder.stop();
+            voiceRecorder = null;
         }
     }
 
@@ -366,6 +455,10 @@ public class GestureControlService extends Service {
         } else {
             title = paused ? "手势翻页已暂停" : "手势翻页运行中";
             text = paused ? "点击继续识别，或停止服务"
+                    : gestureMode == GestureMode.CUSTOM_GESTURE
+                    ? "前摄运行中 · 自定义手势"
+                    : gestureMode == GestureMode.CUSTOM_VOICE
+                    ? "麦克风运行中 · 自定义声音"
                     : gestureMode == GestureMode.TWO_FINGER_DIRECTION
                     ? "前摄运行中 · 双指指向"
                     : gestureMode == GestureMode.MIDDLE_FINGER_DIRECTION
@@ -385,7 +478,11 @@ public class GestureControlService extends Service {
     }
 
     private String calibrationState() {
-        return gestureMode == GestureMode.TWO_FINGER_DIRECTION
+        return gestureMode == GestureMode.CUSTOM_GESTURE
+                ? "校准中 · 等待自定义手势"
+                : gestureMode == GestureMode.CUSTOM_VOICE
+                ? "校准中 · 等待自定义声音"
+                : gestureMode == GestureMode.TWO_FINGER_DIRECTION
                 ? "校准中 · 等待双指指向"
                 : gestureMode == GestureMode.MIDDLE_FINGER_DIRECTION
                 ? "校准中 · 等待中指指向"
@@ -415,6 +512,9 @@ public class GestureControlService extends Service {
         calibrationMode = false;
         calibrationSawUp = false;
         calibrationSawDown = false;
+        if (customGestureRecognizer != null) customGestureRecognizer.reset();
+        if (customVoiceRecognizer != null) customVoiceRecognizer.reset();
+        stopVoiceRecorder();
         if (analyzer != null) {
             analyzer.reset();
             analyzer.close();

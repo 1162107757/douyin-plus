@@ -74,16 +74,20 @@ public class GestureAccessibilityService extends AccessibilityService {
      * @param upward true for screen-up (next video), false for screen-down (previous video)
      */
     public static boolean performSwipe(boolean upward) {
+        return performSwipe(upward ? ControlDirection.UP : ControlDirection.DOWN);
+    }
+
+    public static boolean performSwipe(ControlDirection direction) {
         GestureAccessibilityService service = instance;
         // dispatchGesture injects into the current foreground surface. Do not
         // gate it on a package-name lookup: several OEMs report the active
         // accessibility window as SystemUI while a video app is transitioning,
         // which used to drop an otherwise valid recognition.
-        if (service == null) return false;
-        return service.dispatchDirectionalSwipe(upward);
+        if (service == null || direction == null) return false;
+        return service.dispatchDirectionalSwipe(direction);
     }
 
-    private boolean dispatchDirectionalSwipe(boolean upward) {
+    private boolean dispatchDirectionalSwipe(ControlDirection direction) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false;
         if (gestureInFlight) {
             Log.d(TAG, "ignore swipe while previous gesture is in flight");
@@ -91,12 +95,15 @@ public class GestureAccessibilityService extends AccessibilityService {
         }
         float width = getResources().getDisplayMetrics().widthPixels;
         float height = getResources().getDisplayMetrics().heightPixels;
-        float x = width * 0.50f;
-        float startY = upward ? height * 0.78f : height * 0.28f;
-        float endY = upward ? height * 0.28f : height * 0.78f;
+        boolean vertical = direction == ControlDirection.UP || direction == ControlDirection.DOWN;
+        boolean positive = direction == ControlDirection.UP || direction == ControlDirection.RIGHT;
+        float startX = vertical ? width * 0.50f : (positive ? width * 0.25f : width * 0.75f);
+        float endX = vertical ? startX : (positive ? width * 0.75f : width * 0.25f);
+        float startY = vertical ? (positive ? height * 0.78f : height * 0.28f) : height * 0.50f;
+        float endY = vertical ? (positive ? height * 0.28f : height * 0.78f) : startY;
         Path path = new Path();
-        path.moveTo(x, startY);
-        path.lineTo(x, endY);
+        path.moveTo(startX, startY);
+        path.lineTo(endX, endY);
         GestureDescription.StrokeDescription stroke =
                 new GestureDescription.StrokeDescription(path, 0, 380);
         GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
@@ -105,15 +112,15 @@ public class GestureAccessibilityService extends AccessibilityService {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
                 gestureInFlight = false;
-                Log.d(TAG, upward ? "swipe up completed" : "swipe down completed");
-                sendGestureState(upward ? "滑动已完成 · 下一个视频" : "滑动已完成 · 上一个视频");
+                Log.d(TAG, "swipe " + direction.name().toLowerCase() + " completed");
+                sendGestureState("滑动已完成 · " + direction.getAction());
                 super.onCompleted(gestureDescription);
             }
 
             @Override
             public void onCancelled(GestureDescription gestureDescription) {
                 gestureInFlight = false;
-                Log.w(TAG, upward ? "swipe up cancelled" : "swipe down cancelled");
+                Log.w(TAG, "swipe " + direction.name().toLowerCase() + " cancelled");
                 sendGestureState("滑动被系统取消，请保持视频应用在前台");
                 super.onCancelled(gestureDescription);
             }
@@ -127,7 +134,7 @@ public class GestureAccessibilityService extends AccessibilityService {
                 Log.w(TAG, "swipe callback timeout; re-arming gesture dispatch");
             }
         }, 1100L);
-        Log.d(TAG, "dispatch swipe=" + upward + " accepted=" + dispatched
+        Log.d(TAG, "dispatch swipe=" + direction + " accepted=" + dispatched
                 + " target=" + activePackageName);
         if (!dispatched) {
             gestureInFlight = false;

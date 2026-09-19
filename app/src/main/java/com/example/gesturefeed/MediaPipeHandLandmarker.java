@@ -24,10 +24,16 @@ public final class MediaPipeHandLandmarker implements AutoCloseable {
         void onState(String state);
     }
 
+    /** Optional raw-landmark stream used by custom gesture enrollment/matching. */
+    public interface FrameListener {
+        void onFrame(List<NormalizedLandmark> landmarks, long timestamp, int rotationDegrees);
+    }
+
     private final HandMotionAnalyzer motion;
     private final TwoFingerDirectionAnalyzer twoFinger;
     private final MiddleFingerDirectionAnalyzer middleFinger;
     private final Listener listener;
+    private FrameListener frameListener;
     private HandLandmarker landmarker;
     private long lastTimestamp;
     private int rotationDegrees;
@@ -79,9 +85,13 @@ public final class MediaPipeHandLandmarker implements AutoCloseable {
                     // Keep recall high enough for a quick hand entry/exit;
                     // the trajectory state machine and release guard handle
                     // the resulting occasional low-confidence frame.
-                    .setMinHandDetectionConfidence(0.55f)
-                    .setMinHandPresenceConfidence(0.50f)
-                    .setMinTrackingConfidence(0.50f)
+                    // Custom gestures need recall for a hand that enters the
+                    // frame briefly. The recognizers apply their own motion
+                    // and cooldown guards, so a lower model gate is safer
+                    // than dropping the first half of a quick movement.
+                    .setMinHandDetectionConfidence(0.35f)
+                    .setMinHandPresenceConfidence(0.30f)
+                    .setMinTrackingConfidence(0.30f)
                     .build();
             landmarker = HandLandmarker.createFromOptions(context, options);
             listener.onState("模型已就绪 · 等待手掌");
@@ -105,6 +115,10 @@ public final class MediaPipeHandLandmarker implements AutoCloseable {
         middleFinger.reset();
     }
 
+    public synchronized void setFrameListener(FrameListener listener) {
+        frameListener = listener;
+    }
+
     public void analyze(Image image) {
         if (image == null || landmarker == null) return;
         // Keep the timestamp clock consistent with HandMotionAnalyzer's
@@ -124,6 +138,8 @@ public final class MediaPipeHandLandmarker implements AutoCloseable {
             HandLandmarkerResult result = landmarker.detectForVideo(mpImage, timestamp);
             List<List<NormalizedLandmark>> hands = result.landmarks();
             if (hands == null || hands.isEmpty() || hands.get(0) == null || hands.get(0).size() < 21) {
+                FrameListener rawListener = frameListener;
+                if (rawListener != null) rawListener.onFrame(null, timestamp, rotationDegrees);
                 if (mode == GestureMode.TWO_FINGER_DIRECTION) {
                     twoFinger.analyze(null, timestamp);
                 } else if (mode == GestureMode.MIDDLE_FINGER_DIRECTION) {
@@ -134,6 +150,8 @@ public final class MediaPipeHandLandmarker implements AutoCloseable {
                 return;
             }
             List<NormalizedLandmark> landmarks = hands.get(0);
+            FrameListener rawListener = frameListener;
+            if (rawListener != null) rawListener.onFrame(landmarks, timestamp, rotationDegrees);
             if (mode == GestureMode.TWO_FINGER_DIRECTION) {
                 twoFinger.analyze(landmarks, timestamp);
                 return;

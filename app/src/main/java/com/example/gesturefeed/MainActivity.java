@@ -53,7 +53,10 @@ import android.widget.TextView;
 public class MainActivity extends Activity {
     private static final int REQ_CAMERA = 41;
     private static final int REQ_NOTIFICATIONS = 42;
+    private static final int REQ_AUDIO = 43;
     private static final String PREF_GESTURE_MODE = "gesture_mode";
+    private static final int MIN_CUSTOM_GESTURE_SAMPLES = 3;
+    private static final int MIN_CUSTOM_VOICE_SAMPLES = 1;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private LinearLayout page;
@@ -63,6 +66,7 @@ public class MainActivity extends Activity {
     private TextView statusDescription;
     private TextView statusDot;
     private Button startButton;
+    private Button setupButton;
     private RadioGroup modeGroup;
     private GestureMode selectedMode = GestureMode.PALM_SWING;
     private BroadcastReceiver stateReceiver;
@@ -145,13 +149,13 @@ public class MainActivity extends Activity {
         page.addView(buildModeCard(), lp(-1, -2, 0, 0, 0, 16));
         page.addView(buildDirectionCard(), lp(-1, -2, 0, 0, 0, 20));
 
-        startButton = primaryButton("开始手势翻页");
+        startButton = primaryButton(startActionLabel(false));
         startButton.setOnClickListener(v -> toggleControl());
         page.addView(startButton, lp(-1, dp(56), 0, 0, 0, 10));
 
-        Button calibration = outlineButton("手势校准");
-        calibration.setOnClickListener(v -> showCalibrationDialog());
-        page.addView(calibration, lp(-1, dp(56), 0, 0, 0, 4));
+        setupButton = outlineButton(setupActionLabel());
+        setupButton.setOnClickListener(v -> openSetupForSelectedMode());
+        page.addView(setupButton, lp(-1, dp(56), 0, 0, 0, 4));
 
         Button openVideoApp = textButton("打开视频应用");
         openVideoApp.setOnClickListener(v -> openVideoApp());
@@ -277,13 +281,21 @@ public class MainActivity extends Activity {
         RadioButton palm = modeOption(GestureMode.PALM_SWING);
         RadioButton twoFinger = modeOption(GestureMode.TWO_FINGER_DIRECTION);
         RadioButton middleFinger = modeOption(GestureMode.MIDDLE_FINGER_DIRECTION);
+        RadioButton customGesture = modeOption(GestureMode.CUSTOM_GESTURE);
+        RadioButton customVoice = modeOption(GestureMode.CUSTOM_VOICE);
         modeGroup.addView(palm, lp(-1, dp(56), 0, 0, 0, 0));
         modeGroup.addView(twoFinger, lp(-1, dp(56), 0, 0, 0, 0));
         modeGroup.addView(middleFinger, lp(-1, dp(56), 0, 0, 0, 0));
+        modeGroup.addView(customGesture, lp(-1, dp(56), 0, 0, 0, 0));
+        modeGroup.addView(customVoice, lp(-1, dp(56), 0, 0, 0, 0));
         RadioButton selected = selectedMode == GestureMode.TWO_FINGER_DIRECTION
                 ? twoFinger
                 : selectedMode == GestureMode.MIDDLE_FINGER_DIRECTION
-                ? middleFinger : palm;
+                ? middleFinger
+                : selectedMode == GestureMode.CUSTOM_GESTURE
+                ? customGesture
+                : selectedMode == GestureMode.CUSTOM_VOICE
+                ? customVoice : palm;
         modeGroup.check(selected.getId());
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> {
             if (GestureControlService.isRunning()) {
@@ -298,8 +310,20 @@ public class MainActivity extends Activity {
             getPreferences(MODE_PRIVATE).edit()
                     .putString(PREF_GESTURE_MODE, selectedMode.name())
                     .apply();
+            updateSetupButton();
+            refreshPermissionState();
+            if ((isCustomGestureMode() || isCustomVoiceMode())
+                    && !hasRequiredCustomTraining()) {
+                mainHandler.post(() -> {
+                    if (!isFinishing() && !GestureControlService.isRunning()) {
+                        android.widget.Toast.makeText(this, trainingRequirementMessage(),
+                                android.widget.Toast.LENGTH_LONG).show();
+                        openSetupForSelectedMode();
+                    }
+                });
+            }
         });
-        card.addView(modeGroup, lp(-1, dp(168), 0, 0, 0, 0));
+        card.addView(modeGroup, lp(-1, dp(280), 0, 0, 0, 0));
         return card;
     }
 
@@ -340,14 +364,17 @@ public class MainActivity extends Activity {
     private View buildDirectionCard() {
         LinearLayout card = surface();
         card.setPadding(dp(16), dp(13), dp(16), dp(13));
-        TextView heading = text("双向切换", 15, ink, true);
+        TextView heading = text("四向切换", 15, ink, true);
         card.addView(heading, lp(-1, -2, 0, 0, 0, 9));
-        addDirectionRow(card, true, "向上挥动", "上滑  ·  下一个视频", blue);
-        addDirectionRow(card, false, "向下挥动", "下滑  ·  上一个视频", orange);
+        addDirectionRow(card, ControlDirection.UP, "向上动作", "上滑  ·  下一个视频", blue);
+        addDirectionRow(card, ControlDirection.DOWN, "向下动作", "下滑  ·  上一个视频", orange);
+        addDirectionRow(card, ControlDirection.LEFT, "向左动作", "左滑  ·  左侧操作", blue);
+        addDirectionRow(card, ControlDirection.RIGHT, "向右动作", "右滑  ·  右侧操作", orange);
         return card;
     }
 
-    private void addDirectionRow(LinearLayout parent, boolean up, String title, String detail, int accent) {
+    private void addDirectionRow(LinearLayout parent, ControlDirection direction,
+                                 String title, String detail, int accent) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -355,7 +382,10 @@ public class MainActivity extends Activity {
         View stripe = new View(this);
         stripe.setBackgroundColor(accent);
         row.addView(stripe, lp(dp(4), dp(28), 0, 0, 10, 0));
-        row.addView(new IconView(this, up ? IconView.ARROW_UP : IconView.ARROW_DOWN, accent),
+        int icon = direction == ControlDirection.UP ? IconView.ARROW_UP
+                : direction == ControlDirection.DOWN ? IconView.ARROW_DOWN
+                : direction == ControlDirection.LEFT ? IconView.ARROW_LEFT : IconView.ARROW_RIGHT;
+        row.addView(new IconView(this, icon, accent),
                 lp(dp(22), dp(22), 0, 0, 10, 0));
         TextView label = text(title, 14, ink, true);
         row.addView(label, lp(dp(92), -2, 0, 0, 8, 0));
@@ -462,9 +492,12 @@ public class MainActivity extends Activity {
     }
 
     private void requestInitialPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+        if (!isCustomVoiceMode() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+        } else if (isCustomVoiceMode() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
         } else if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
@@ -485,26 +518,41 @@ public class MainActivity extends Activity {
     private void refreshPermissionState() {
         if (cameraValue == null || accessibilityValue == null) return;
         boolean runningState = GestureControlService.isRunning();
-        startButton.setText(runningState ? "停止手势翻页" : "开始手势翻页");
+        startButton.setText(startActionLabel(runningState));
         boolean camera = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                 || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        boolean microphone = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                || checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
         boolean accessibility = isAccessibilityEnabled();
         setModeSelectorEnabled(!runningState);
-        cameraValue.setText(camera ? "已开启" : "未开启");
-        cameraValue.setTextColor(camera ? green : orange);
+        if (isCustomVoiceMode()) {
+            cameraValue.setText("非必需");
+            cameraValue.setTextColor(muted);
+        } else {
+            cameraValue.setText(camera ? "已开启" : "未开启");
+            cameraValue.setTextColor(camera ? green : orange);
+        }
         accessibilityValue.setText(accessibility ? "已开启" : "去开启");
         accessibilityValue.setTextColor(accessibility ? green : orange);
         if (runningState) {
             startButton.setAlpha(1f);
             return;
         }
-        boolean ready = camera && accessibility;
+        boolean trainingReady = hasRequiredCustomTraining();
+        boolean ready = (isCustomVoiceMode() ? microphone : camera) && accessibility && trainingReady;
         startButton.setEnabled(true);
         startButton.setAlpha(ready ? 1f : 0.72f);
-        if (!ready && !GestureControlService.isRunning()) {
+        if (!trainingReady) {
+            statusTitle.setText("需要完成录入");
+            statusTitle.setTextColor(orange);
+            statusDescription.setText(trainingRequirementMessage());
+            statusDot.setTextColor(orange);
+        } else if (!ready && !GestureControlService.isRunning()) {
             statusTitle.setText("完成权限设置");
             statusTitle.setTextColor(orange);
-            statusDescription.setText("开启相机和辅助功能后即可开始");
+            statusDescription.setText(isCustomVoiceMode()
+                    ? "开启麦克风和辅助功能后即可开始"
+                    : "开启相机和辅助功能后即可开始");
             statusDot.setTextColor(orange);
         } else if (!GestureControlService.isRunning()) {
             statusTitle.setText("准备就绪");
@@ -525,10 +573,22 @@ public class MainActivity extends Activity {
     }
 
     private void startControl() {
+        if (!hasRequiredCustomTraining()) {
+            android.widget.Toast.makeText(this, trainingRequirementMessage(),
+                    android.widget.Toast.LENGTH_LONG).show();
+            openSetupForSelectedMode();
+            return;
+        }
         boolean camera = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                 || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
-        if (!camera) {
+        boolean microphone = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                || checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        if (!isCustomVoiceMode() && !camera) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+            return;
+        }
+        if (isCustomVoiceMode() && !microphone) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
             return;
         }
         if (!isAccessibilityEnabled()) {
@@ -543,7 +603,9 @@ public class MainActivity extends Activity {
         mainHandler.postDelayed(this::openVideoApp, 650);
         statusTitle.setText("启动中");
         statusTitle.setTextColor(blue);
-        statusDescription.setText("正在准备前摄与手势识别");
+        statusDescription.setText(isCustomVoiceMode()
+                ? "正在准备麦克风与声音识别"
+                : "正在准备前摄与手势识别");
         statusDot.setTextColor(blue);
     }
 
@@ -556,13 +618,74 @@ public class MainActivity extends Activity {
             if (notificationManager != null) notificationManager.cancelAll();
             statusTitle.setText("已停止");
             statusTitle.setTextColor(muted);
-            statusDescription.setText("前摄和手势识别已释放");
+            statusDescription.setText(isCustomVoiceMode()
+                    ? "麦克风和声音识别已释放"
+                    : "前摄和手势识别已释放");
             statusDot.setTextColor(muted);
-            startButton.setText("开始手势翻页");
+            startButton.setText(startActionLabel(false));
             setModeSelectorEnabled(true);
             return;
         }
         startControl();
+    }
+
+    private boolean isCustomGestureMode() {
+        return selectedMode == GestureMode.CUSTOM_GESTURE;
+    }
+
+    private boolean isCustomVoiceMode() {
+        return selectedMode == GestureMode.CUSTOM_VOICE;
+    }
+
+    private String startActionLabel(boolean running) {
+        if (running) return isCustomVoiceMode() ? "停止声音翻页" : "停止手势翻页";
+        return isCustomVoiceMode() ? "开始声音翻页" : "开始手势翻页";
+    }
+
+    private boolean hasRequiredCustomTraining() {
+        if (!isCustomGestureMode() && !isCustomVoiceMode()) return true;
+        FeatureTemplateStore store = new FeatureTemplateStore(this,
+                isCustomGestureMode() ? "custom_gesture_templates" : "custom_voice_templates");
+        if (isCustomVoiceMode()) {
+            int total = 0;
+            for (ControlDirection direction : ControlDirection.values()) total += store.count(direction);
+            return total >= MIN_CUSTOM_VOICE_SAMPLES;
+        }
+        for (ControlDirection direction : ControlDirection.values()) {
+            if (store.count(direction) < MIN_CUSTOM_GESTURE_SAMPLES) return false;
+        }
+        return true;
+    }
+
+    private String trainingRequirementMessage() {
+        return isCustomVoiceMode()
+                ? "自定义声音至少录入一个方向 1 次，请先完成录入"
+                : "自定义手势要求每个方向至少录入 3 次，请先完成录入";
+    }
+
+    private String setupActionLabel() {
+        if (isCustomGestureMode()) return "录入自定义手势";
+        if (isCustomVoiceMode()) return "录入自定义声音";
+        return "手势校准";
+    }
+
+    private void updateSetupButton() {
+        if (setupButton != null) setupButton.setText(setupActionLabel());
+    }
+
+    private void openSetupForSelectedMode() {
+        if (GestureControlService.isRunning()) {
+            android.widget.Toast.makeText(this, "请先停止手势翻页，再进行设置",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (isCustomGestureMode() || isCustomVoiceMode()) {
+            Intent intent = new Intent(this, CustomTrainingActivity.class);
+            intent.putExtra(CustomTrainingActivity.EXTRA_MODE, selectedMode.name());
+            startActivity(intent);
+        } else {
+            showCalibrationDialog();
+        }
     }
 
     private void openVideoApp() {
@@ -584,13 +707,17 @@ public class MainActivity extends Activity {
 
     private void updateRuntimeState() {
         if (GestureControlService.isRunning()) {
-            startButton.setText("停止手势翻页");
+            startButton.setText(startActionLabel(true));
             setModeSelectorEnabled(false);
             startButton.setAlpha(1f);
             statusTitle.setText(GestureControlService.isPaused() ? "已暂停" : "正在运行");
             statusTitle.setTextColor(GestureControlService.isPaused() ? muted : green);
             statusDescription.setText(GestureControlService.isPaused()
-                    ? "前摄已暂停，可从通知继续"
+                    ? "识别已暂停，可从通知继续"
+                    : selectedMode == GestureMode.CUSTOM_GESTURE
+                    ? "前摄识别已学习手势"
+                    : selectedMode == GestureMode.CUSTOM_VOICE
+                    ? "麦克风识别已学习口令"
                     : selectedMode == GestureMode.TWO_FINGER_DIRECTION
                     ? "伸出食指和中指，指向上方或下方"
                     : selectedMode == GestureMode.MIDDLE_FINGER_DIRECTION
@@ -598,7 +725,7 @@ public class MainActivity extends Activity {
                     : "张开手掌，向上或向下挥动");
             statusDot.setTextColor(GestureControlService.isPaused() ? muted : green);
         } else if (startButton != null) {
-            startButton.setText("开始手势翻页");
+            startButton.setText(startActionLabel(false));
             setModeSelectorEnabled(true);
         }
     }
@@ -611,13 +738,18 @@ public class MainActivity extends Activity {
             statusTitle.setTextColor(green);
             statusDescription.setText(state);
             statusDot.setTextColor(green);
-        } else if (state.contains("取消") || state.contains("失败") || state.contains("请先打开")) {
+        } else if (state.contains("取消") || state.contains("失败") || state.contains("请先打开")
+                || state.contains("未匹配") || state.contains("请先完成")) {
             statusTitle.setText("需要注意");
             statusTitle.setTextColor(orange);
             statusDescription.setText(state);
             statusDot.setTextColor(orange);
         } else if (state.contains("未检测到手") || state.contains("未检测到中指")) {
-            statusDescription.setText(selectedMode == GestureMode.TWO_FINGER_DIRECTION
+            statusDescription.setText(selectedMode == GestureMode.CUSTOM_GESTURE
+                    ? "未匹配到手势，请做已学习动作"
+                    : selectedMode == GestureMode.CUSTOM_VOICE
+                    ? "未匹配到声音，请说已学习口令"
+                    : selectedMode == GestureMode.TWO_FINGER_DIRECTION
                     ? "未检测到双指，请同时伸出食指和中指"
                     : selectedMode == GestureMode.MIDDLE_FINGER_DIRECTION
                     ? "未检测到中指，请竖起中指"
@@ -1027,6 +1159,8 @@ public class MainActivity extends Activity {
         static final int SHIELD = 3;
         static final int ARROW_UP = 4;
         static final int ARROW_DOWN = 5;
+        static final int ARROW_LEFT = 6;
+        static final int ARROW_RIGHT = 7;
         private final int type;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int color;
@@ -1072,12 +1206,20 @@ public class MainActivity extends Activity {
                 shield.close();
                 canvas.drawPath(shield, paint);
                 canvas.drawLine(cx, getHeight() * .25f, cx, getHeight() * .72f, paint);
-            } else {
+            } else if (type == ARROW_UP || type == ARROW_DOWN) {
                 float y1 = type == ARROW_UP ? getHeight() * .78f : getHeight() * .22f;
                 float y2 = type == ARROW_UP ? getHeight() * .22f : getHeight() * .78f;
                 canvas.drawLine(cx, y1, cx, y2, paint);
                 canvas.drawLine(cx, y2, cx - getWidth() * .22f, y2 + (type == ARROW_UP ? getHeight() * .20f : -getHeight() * .20f), paint);
                 canvas.drawLine(cx, y2, cx + getWidth() * .22f, y2 + (type == ARROW_UP ? getHeight() * .20f : -getHeight() * .20f), paint);
+            } else {
+                float x1 = type == ARROW_RIGHT ? getWidth() * .22f : getWidth() * .78f;
+                float x2 = type == ARROW_RIGHT ? getWidth() * .78f : getWidth() * .22f;
+                canvas.drawLine(x1, cy, x2, cy, paint);
+                canvas.drawLine(x2, cy, x2 + (type == ARROW_RIGHT ? -getWidth() * .20f : getWidth() * .20f),
+                        cy - getHeight() * .22f, paint);
+                canvas.drawLine(x2, cy, x2 + (type == ARROW_RIGHT ? -getWidth() * .20f : getWidth() * .20f),
+                        cy + getHeight() * .22f, paint);
             }
         }
     }
