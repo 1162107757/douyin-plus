@@ -16,6 +16,8 @@ import java.nio.ByteBuffer;
  */
 public final class HandMotionAnalyzer {
     private static final String TAG = "GestureFeed";
+    /** Require the hand to disappear before accepting another trajectory. */
+    private static final long HAND_RELEASE_REQUIRED_MS = 550L;
     public interface Listener {
         void onGesture(boolean upward);
         void onState(String state);
@@ -340,7 +342,7 @@ public final class HandMotionAnalyzer {
         if (awaitHandRelease) {
             if (feature == null) {
                 if (handReleaseSince == 0L) handReleaseSince = now;
-                if (now >= cooldownUntil && now - handReleaseSince >= 420L) {
+                if (now >= cooldownUntil && now - handReleaseSince >= HAND_RELEASE_REQUIRED_MS) {
                     rearmAfterRelease(now);
                 }
             } else {
@@ -358,22 +360,12 @@ public final class HandMotionAnalyzer {
                 releaseHasPoint = true;
                 if (releaseMotion <= 0.045f) {
                     if (visibleStableSince == 0L) visibleStableSince = now;
-                    // If the hand remains visible at the endpoint, a short
-                    // stable pause is enough to re-arm. This keeps the
-                    // detector responsive without allowing the release path
-                    // itself to become an opposite gesture.
-                    if (now >= cooldownUntil && now - visibleStableSince >= 450L) {
-                        rearmAfterRelease(now);
-                    }
+                    // Keep the detector locked while the hand is visible.
+                    // A stable endpoint is not a release: re-arming here can
+                    // interpret the user's hand drop/return as the opposite
+                    // swipe and make the video jump back immediately.
                 } else {
                     visibleStableSince = 0L;
-                }
-                // A hand that never leaves the frame should not permanently
-                // disable the control. After the release guard has had ample
-                // time to absorb the return movement, re-anchor once and let
-                // the next deliberate trajectory be recognized.
-                if (awaitHandRelease && now >= cooldownUntil + 1000L) {
-                    rearmAfterRelease(now);
                 }
             }
             return;

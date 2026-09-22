@@ -6,6 +6,7 @@ import android.graphics.Path;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
@@ -34,6 +35,9 @@ public class GestureAccessibilityService extends AccessibilityService {
     private static volatile GestureAccessibilityService instance;
     /** Prevents a second dispatch while the previous swipe is still settling. */
     private static volatile boolean gestureInFlight;
+    /** Extra guard for recognizer jitter and the app's swipe animation settling. */
+    private static volatile long nextDispatchAllowedAt;
+    private static final long MIN_DISPATCH_INTERVAL_MS = 1100L;
     private static final String TAG = "GestureFeed";
     private volatile String activePackageName;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -44,6 +48,7 @@ public class GestureAccessibilityService extends AccessibilityService {
         instance = this;
         activePackageName = null;
         gestureInFlight = false;
+        nextDispatchAllowedAt = 0L;
     }
 
     @Override
@@ -56,6 +61,7 @@ public class GestureAccessibilityService extends AccessibilityService {
     public void onInterrupt() {
         activePackageName = null;
         gestureInFlight = false;
+        nextDispatchAllowedAt = 0L;
     }
 
     @Override
@@ -63,6 +69,7 @@ public class GestureAccessibilityService extends AccessibilityService {
         if (instance == this) instance = null;
         activePackageName = null;
         gestureInFlight = false;
+        nextDispatchAllowedAt = 0L;
         return super.onUnbind(intent);
     }
 
@@ -89,8 +96,11 @@ public class GestureAccessibilityService extends AccessibilityService {
 
     private boolean dispatchDirectionalSwipe(ControlDirection direction) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false;
-        if (gestureInFlight) {
-            Log.d(TAG, "ignore swipe while previous gesture is in flight");
+        long now = SystemClock.uptimeMillis();
+        if (gestureInFlight || now < nextDispatchAllowedAt) {
+            Log.d(TAG, "ignore swipe while previous gesture is settling"
+                    + " inFlight=" + gestureInFlight
+                    + " remainingMs=" + Math.max(0L, nextDispatchAllowedAt - now));
             return false;
         }
         float width = getResources().getDisplayMetrics().widthPixels;
@@ -108,6 +118,7 @@ public class GestureAccessibilityService extends AccessibilityService {
                 new GestureDescription.StrokeDescription(path, 0, 380);
         GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
         gestureInFlight = true;
+        nextDispatchAllowedAt = now + MIN_DISPATCH_INTERVAL_MS;
         boolean dispatched = dispatchGesture(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
@@ -138,6 +149,7 @@ public class GestureAccessibilityService extends AccessibilityService {
                 + " target=" + activePackageName);
         if (!dispatched) {
             gestureInFlight = false;
+            nextDispatchAllowedAt = 0L;
             sendGestureState("滑动派发失败，请检查辅助功能服务");
         }
         return dispatched;

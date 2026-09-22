@@ -58,6 +58,7 @@ public final class CustomTrainingActivity extends Activity {
 
     private GestureMode mode;
     private FeatureTemplateStore store;
+    private VoiceSpeakerProfileStore speakerStore;
     private TextView status;
     private TextView previewState;
     private TextureView texture;
@@ -92,6 +93,7 @@ public final class CustomTrainingActivity extends Activity {
         store = new FeatureTemplateStore(this,
                 mode == GestureMode.CUSTOM_GESTURE
                         ? "custom_gesture_templates" : "custom_voice_templates");
+        if (mode == GestureMode.CUSTOM_VOICE) speakerStore = new VoiceSpeakerProfileStore(this);
         buildUi();
         if (mode == GestureMode.CUSTOM_GESTURE) {
             if (hasPermission(Manifest.permission.CAMERA)) initGestureLearning();
@@ -122,7 +124,8 @@ public final class CustomTrainingActivity extends Activity {
 
         TextView intro = text(mode == GestureMode.CUSTOM_GESTURE
                 ? "最低要求：每个方向至少录入 3 次，建议录入 5 次"
-                : "最低要求：至少录入一个方向 1 次，建议每个方向录入 5 次", 14, muted, false);
+                : "方向至少录入 1 次；累计 " + VoiceSpeakerProfileStore.MIN_SAMPLES
+                + " 次口令后启用严格音色过滤", 14, muted, false);
         page.addView(intro, lp(-1, -2, 0, 0, 0, 12));
 
         if (mode == GestureMode.CUSTOM_GESTURE) {
@@ -163,6 +166,7 @@ public final class CustomTrainingActivity extends Activity {
                 .setNegativeButton("取消", null)
                 .setPositiveButton("清空", (dialog, which) -> {
                     for (ControlDirection direction : ControlDirection.values()) store.clear(direction);
+                    if (speakerStore != null) speakerStore.clear();
                     refreshCounts();
                     setStatus("当前模式学习数据已清空", green);
                 })
@@ -349,7 +353,13 @@ public final class CustomTrainingActivity extends Activity {
                 setStatus("没有采集到清晰声音，请重新录入", orange);
             } else {
                 store.addSample(direction, sequence);
-                setStatus("已保存" + direction.getLabel() + "方向口令", green);
+                float[] speakerProfile = VoiceFeatureExtractor.speakerSignature(samples);
+                if (speakerStore != null && speakerProfile != null) speakerStore.addSample(speakerProfile);
+                int profileCount = speakerStore == null ? 0 : speakerStore.count();
+                setStatus(profileCount >= VoiceSpeakerProfileStore.MIN_SAMPLES
+                        ? "已保存" + direction.getLabel() + "方向口令 · 音色过滤已启用"
+                        : "已保存" + direction.getLabel() + "方向口令 · 音色学习 "
+                        + profileCount + "/" + VoiceSpeakerProfileStore.MIN_SAMPLES, green);
             }
         }
         refreshCounts();

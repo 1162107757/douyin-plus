@@ -53,6 +53,7 @@ public class GestureControlService extends Service {
     private GestureMode gestureMode = GestureMode.PALM_SWING;
     private FeatureTemplateStore gestureTemplateStore;
     private FeatureTemplateStore voiceTemplateStore;
+    private VoiceSpeakerProfileStore speakerProfileStore;
     private CustomGestureRecognizer customGestureRecognizer;
     private VoiceCommandRecognizer customVoiceRecognizer;
     private VoiceRecorder voiceRecorder;
@@ -82,6 +83,7 @@ public class GestureControlService extends Service {
         super.onCreate();
         gestureTemplateStore = new FeatureTemplateStore(this, "custom_gesture_templates");
         voiceTemplateStore = new FeatureTemplateStore(this, "custom_voice_templates");
+        speakerProfileStore = new VoiceSpeakerProfileStore(this);
         customGestureRecognizer = new CustomGestureRecognizer(gestureTemplateStore,
                 new CustomGestureRecognizer.Listener() {
                     @Override
@@ -94,7 +96,7 @@ public class GestureControlService extends Service {
                         if (!paused && gestureMode == GestureMode.CUSTOM_GESTURE) sendState(state);
                     }
                 });
-        customVoiceRecognizer = new VoiceCommandRecognizer(voiceTemplateStore,
+        customVoiceRecognizer = new VoiceCommandRecognizer(voiceTemplateStore, speakerProfileStore,
                 new VoiceCommandRecognizer.Listener() {
                     @Override
                     public void onGesture(ControlDirection direction) {

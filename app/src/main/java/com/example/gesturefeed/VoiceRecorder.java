@@ -3,10 +3,13 @@ package com.example.gesturefeed;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.NoiseSuppressor;
+import android.util.Log;
 
 /** Small reusable 16 kHz microphone reader for enrollment and recognition. */
 public final class VoiceRecorder implements AutoCloseable {
+    private static final String TAG = "GestureFeed";
     public interface Listener {
         void onSamples(short[] samples);
         void onError(String message);
@@ -14,6 +17,7 @@ public final class VoiceRecorder implements AutoCloseable {
 
     private final Listener listener;
     private AudioRecord recorder;
+    private AcousticEchoCanceler echoCanceler;
     private NoiseSuppressor noiseSuppressor;
     private Thread thread;
     private volatile boolean running;
@@ -32,24 +36,47 @@ public final class VoiceRecorder implements AutoCloseable {
         }
         try {
             int bufferSize = Math.max(minimum * 2, 4096);
-            try {
-                // VOICE_RECOGNITION asks the platform for the speech-input
-                // path, which usually includes vendor echo/noise processing.
-                recorder = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                        VoiceFeatureExtractor.SAMPLE_RATE,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        bufferSize);
-            } catch (IllegalArgumentException unsupportedSource) {
-                // A few older devices expose only the normal microphone path.
-                recorder = new AudioRecord(MediaRecorder.AudioSource.MIC,
-                        VoiceFeatureExtractor.SAMPLE_RATE,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        bufferSize);
+            int[] sources = {
+                    // The communication path is the one most devices wire to
+                    // the hardware echo reference.
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    MediaRecorder.AudioSource.MIC
+            };
+            for (int source : sources) {
+                try {
+                    AudioRecord candidate = new AudioRecord(source,
+                            VoiceFeatureExtractor.SAMPLE_RATE,
+                            AudioFormat.CHANNEL_IN_MONO,
+                            AudioFormat.ENCODING_PCM_16BIT,
+                            bufferSize);
+                    if (candidate.getState() == AudioRecord.STATE_INITIALIZED) {
+                        recorder = candidate;
+                        Log.i(TAG, "voice recorder source=" + source);
+                        break;
+                    }
+                    candidate.release();
+                } catch (IllegalArgumentException ignored) {
+                    // Try the next source on devices that do not expose this
+                    // input profile.
+                }
             }
-            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+            if (recorder == null) {
                 throw new IllegalStateException("AudioRecord not initialized");
+            }
+            if (AcousticEchoCanceler.isAvailable()) {
+                try {
+                    echoCanceler = AcousticEchoCanceler.create(recorder.getAudioSessionId());
+                    if (echoCanceler != null) {
+                        echoCanceler.setEnabled(true);
+                        Log.i(TAG, "acoustic echo canceler enabled=" + echoCanceler.getEnabled());
+                    }
+                } catch (RuntimeException ignored) {
+                    echoCanceler = null;
+                    Log.w(TAG, "acoustic echo canceler unavailable");
+                }
+            } else {
+                Log.i(TAG, "acoustic echo canceler not supported");
             }
             if (NoiseSuppressor.isAvailable()) {
                 try {
@@ -109,6 +136,14 @@ public final class VoiceRecorder implements AutoCloseable {
     }
 
     private synchronized void releaseRecorder() {
+        if (echoCanceler != null) {
+            try {
+                echoCanceler.setEnabled(false);
+            } catch (RuntimeException ignored) {
+            }
+            echoCanceler.release();
+            echoCanceler = null;
+        }
         if (noiseSuppressor != null) {
             try {
                 noiseSuppressor.setEnabled(false);

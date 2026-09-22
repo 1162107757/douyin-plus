@@ -17,6 +17,7 @@ public final class MiddleFingerDirectionAnalyzer {
     }
 
     private final Listener listener;
+    private static final long RELEASE_REQUIRED_MS = 550L;
     private int rotationDegrees;
     private int candidateDirection;
     private int stableFrames;
@@ -49,7 +50,7 @@ public final class MiddleFingerDirectionAnalyzer {
         long now = timestamp > 0L ? timestamp : System.currentTimeMillis();
         Pose pose = detectPose(landmarks);
         if (pose == null) {
-            handlePoseMissing(now);
+            handlePoseMissing(now, landmarks == null || landmarks.size() < 21);
             return;
         }
 
@@ -74,7 +75,7 @@ public final class MiddleFingerDirectionAnalyzer {
         listener.onGesture(pose.upward);
     }
 
-    private void handlePoseMissing(long now) {
+    private void handlePoseMissing(long now, boolean handGone) {
         candidateDirection = 0;
         stableFrames = 0;
         if (!waitingRelease) {
@@ -84,8 +85,15 @@ public final class MiddleFingerDirectionAnalyzer {
             }
             return;
         }
+        // Do not treat a transient landmark classification failure as a full
+        // release. Otherwise the return path of one gesture can be accepted
+        // as a second, opposite direction.
+        if (!handGone) {
+            noPoseSince = 0L;
+            return;
+        }
         if (noPoseSince == 0L) noPoseSince = now;
-        if (now >= cooldownUntil && now - noPoseSince >= 380L) {
+        if (now >= cooldownUntil && now - noPoseSince >= RELEASE_REQUIRED_MS) {
             waitingRelease = false;
             noPoseSince = 0L;
             listener.onState("中指模式 · 准备下一次");

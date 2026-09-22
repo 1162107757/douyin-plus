@@ -56,7 +56,7 @@ public class MainActivity extends Activity {
     private static final int REQ_AUDIO = 43;
     private static final String PREF_GESTURE_MODE = "gesture_mode";
     private static final int MIN_CUSTOM_GESTURE_SAMPLES = 3;
-    private static final int MIN_CUSTOM_VOICE_SAMPLES = 1;
+    private static final int MIN_CUSTOM_VOICE_SAMPLES = VoiceSpeakerProfileStore.MIN_SAMPLES;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private LinearLayout page;
@@ -649,7 +649,8 @@ public class MainActivity extends Activity {
         if (isCustomVoiceMode()) {
             int total = 0;
             for (ControlDirection direction : ControlDirection.values()) total += store.count(direction);
-            return total >= MIN_CUSTOM_VOICE_SAMPLES;
+            VoiceSpeakerProfileStore speakerStore = new VoiceSpeakerProfileStore(this);
+            return total >= 1 && speakerStore.count() >= MIN_CUSTOM_VOICE_SAMPLES;
         }
         for (ControlDirection direction : ControlDirection.values()) {
             if (store.count(direction) < MIN_CUSTOM_GESTURE_SAMPLES) return false;
@@ -659,7 +660,8 @@ public class MainActivity extends Activity {
 
     private String trainingRequirementMessage() {
         return isCustomVoiceMode()
-                ? "自定义声音至少录入一个方向 1 次，请先完成录入"
+                ? "自定义声音至少录入 " + MIN_CUSTOM_VOICE_SAMPLES
+                + " 次以学习音色，请先完成录入"
                 : "自定义手势要求每个方向至少录入 3 次，请先完成录入";
     }
 

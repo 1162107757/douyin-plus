@@ -101,6 +101,93 @@ public final class VoiceFeatureExtractor {
         return result;
     }
 
+    /**
+     * Builds a phrase-independent speaker fingerprint from normalized
+     * spectral-band ratios. Only the mean and spread of voiced frames are
+     * retained, so no raw microphone audio is persisted.
+     */
+    public static float[] speakerSignature(short[] samples) {
+        if (samples == null || samples.length < FRAME_SIZE * 3) return null;
+        int start = 0;
+        int end = samples.length;
+        int peak = 1;
+        for (short sample : samples) peak = Math.max(peak, Math.abs((int) sample));
+        int gate = Math.max(60, peak / 16);
+        while (start < end && Math.abs(samples[start]) < gate) start++;
+        while (end > start && Math.abs(samples[end - 1]) < gate) end--;
+        if (end - start < FRAME_SIZE * 2) return null;
+
+        final int featureCount = 9; // eight band ratios + zero crossing rate
+        float[] sum = new float[featureCount];
+        float[] sumSquares = new float[featureCount];
+        int voicedFrames = 0;
+        int frameCount = 1 + Math.max(0, end - start - FRAME_SIZE) / HOP_SIZE;
+        float voiceGate = Math.max(0.0025f, peak / 32768f / 14f);
+        for (int frame = 0; frame < frameCount; frame++) {
+            int base = Math.min(end - FRAME_SIZE, start + frame * HOP_SIZE);
+            float energy = 0f;
+            int zeroCrossings = 0;
+            float previous = 0f;
+            for (int index = 0; index < FRAME_SIZE; index++) {
+                float value = samples[base + index] / 32768f;
+                float window = 0.54f - 0.46f * (float) Math.cos(
+                        2 * Math.PI * index / (FRAME_SIZE - 1));
+                value *= window;
+                energy += value * value;
+                if (index > 0 && ((value >= 0f) != (previous >= 0f))) zeroCrossings++;
+                previous = value;
+            }
+            float frameRms = (float) Math.sqrt(energy / FRAME_SIZE);
+            if (frameRms < voiceGate) continue;
+
+            float[] features = new float[featureCount];
+            float totalBandEnergy = 0f;
+            for (int band = 0; band < 8; band++) {
+                int firstBin = 2 + band * 7;
+                int lastBin = firstBin + 7;
+                float bandEnergy = 0f;
+                for (int bin = firstBin; bin <= lastBin; bin++) {
+                    float real = 0f;
+                    float imaginary = 0f;
+                    for (int index = 0; index < FRAME_SIZE; index += 2) {
+                        float value = samples[base + index] / 32768f;
+                        float window = 0.54f - 0.46f * (float) Math.cos(
+                                2 * Math.PI * index / (FRAME_SIZE - 1));
+                        double angle = 2 * Math.PI * bin * index / FRAME_SIZE;
+                        real += value * window * (float) Math.cos(angle);
+                        imaginary -= value * window * (float) Math.sin(angle);
+                    }
+                    bandEnergy += real * real + imaginary * imaginary;
+                }
+                features[band] = bandEnergy;
+                totalBandEnergy += bandEnergy;
+            }
+            totalBandEnergy = Math.max(1e-8f, totalBandEnergy);
+            for (int band = 0; band < 8; band++) {
+                features[band] = (float) Math.log(1e-4 + features[band] / totalBandEnergy);
+            }
+            features[8] = zeroCrossings / (float) FRAME_SIZE;
+            for (int index = 0; index < featureCount; index++) {
+                sum[index] += features[index];
+                sumSquares[index] += features[index] * features[index];
+            }
+            voicedFrames++;
+        }
+        // A single short frame is too easy to confuse with a click, music
+        // transient or playback leakage. Require a small voiced window before
+        // producing a speaker fingerprint.
+        if (voicedFrames < 5) return null;
+        float[] profile = new float[VoiceSpeakerProfileStore.PROFILE_SIZE];
+        for (int index = 0; index < featureCount; index++) {
+            float mean = sum[index] / voicedFrames;
+            float variance = Math.max(0f,
+                    sumSquares[index] / voicedFrames - mean * mean);
+            profile[index] = mean;
+            profile[featureCount + index] = (float) Math.sqrt(variance);
+        }
+        return profile;
+    }
+
     public static float distance(float[] first, float[] second) {
         if (first == null || second == null || first.length != second.length) return Float.MAX_VALUE;
         float total = 0f;
